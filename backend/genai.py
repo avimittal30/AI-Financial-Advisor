@@ -8,7 +8,9 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from typing import TypedDict
 
-os.environ['GROQ_API_KEY'] = os.getenv('GROQ_API_KEY')
+groq_api_key = os.getenv('GROQ_API_KEY')
+if groq_api_key:
+    os.environ['GROQ_API_KEY'] = groq_api_key
 
 @tool
 def calculate_coupon_payout(
@@ -86,93 +88,100 @@ def calculate_coupon_payout(
     }
 
 def get_genai_response(bond, user_preference):
-    # llm = ChatOpenAI(model='gpt-4o')
-    llm = ChatGroq(model='deepseek-r1-distill-llama-70b')
-    llm_with_tools = llm.bind_tools([calculate_coupon_payout])
+    try:
+        # llm = ChatOpenAI(model='gpt-4o')
+        if not os.getenv('GROQ_API_KEY'):
+            return "API configuration error: GROQ_API_KEY not found. Please set the environment variable and restart the application."
+        
+        llm = ChatGroq(model='deepseek-r1-distill-llama-70b')
+        llm_with_tools = llm.bind_tools([calculate_coupon_payout])
 
-    class AgentState(TypedDict):
-        messages: List
+        class AgentState(TypedDict):
+            messages: List
 
-    def call_llm(state: AgentState) -> AgentState:
-        response = llm_with_tools.invoke(state["messages"])
-        return {"messages": state["messages"] + [response]}
+        def call_llm(state: AgentState) -> AgentState:
+            response = llm_with_tools.invoke(state["messages"])
+            return {"messages": state["messages"] + [response]}
 
-    def call_tool(state) -> AgentState:
-        last_msg = state["messages"][-1]
-        if not hasattr(last_msg, "tool_calls"):
-            return state
+        def call_tool(state) -> AgentState:
+            last_msg = state["messages"][-1]
+            if not hasattr(last_msg, "tool_calls"):
+                return state
 
-        new_messages = state["messages"][:]
-        for tool_call in last_msg.tool_calls:
-            if tool_call["name"] == "calculate_coupon_payout":
-                args = tool_call["args"]
-                result = calculate_coupon_payout.invoke(args)
-                new_messages.append(
-                    ToolMessage(
-                        tool_call_id=tool_call["id"],
-                        content=str(result)
+            new_messages = state["messages"][:]
+            for tool_call in last_msg.tool_calls:
+                if tool_call["name"] == "calculate_coupon_payout":
+                    args = tool_call["args"]
+                    result = calculate_coupon_payout.invoke(args)
+                    new_messages.append(
+                        ToolMessage(
+                            tool_call_id=tool_call["id"],
+                            content=str(result)
+                        )
                     )
-                )
-        return {"messages": new_messages}
+            return {"messages": new_messages}
 
-    workflow = StateGraph(AgentState)
-    workflow.add_node("llm", call_llm)
-    workflow.add_node("tool", call_tool)
-    workflow.set_entry_point("llm")
+        workflow = StateGraph(AgentState)
+        workflow.add_node("llm", call_llm)
+        workflow.add_node("tool", call_tool)
+        workflow.set_entry_point("llm")
 
-    def should_continue(state):
-        last_msg = state["messages"][-1]
-        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-            return "tool"
-        return END
+        def should_continue(state):
+            last_msg = state["messages"][-1]
+            if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                return "tool"
+            return END
 
-    workflow.add_conditional_edges("llm", should_continue)
-    workflow.add_edge("tool", "llm")
+        workflow.add_conditional_edges("llm", should_continue)
+        workflow.add_edge("tool", "llm")
 
-    graph = workflow.compile()
+        graph = workflow.compile()
 
-    today_str = datetime.today().strftime("%d-%m-%Y")
+        today_str = datetime.today().strftime("%d-%m-%Y")
 
-    prompt = f"""You are an investment advisor that recommends suitable fixed income bonds to users according to their preferences.
-                  You have access to a tool that calculates payouts at desired frequency.
+        prompt = f"""You are an investment advisor that recommends suitable fixed income bonds to users according to their preferences.
+                      You have access to a tool that calculates payouts at desired frequency.
 
-                  Here is the bond information:
-                  {bond}
+                      Here is the bond information:
+                      {bond}
 
-                  Here are the user preferences:
-                  {user_preference}
+                      Here are the user preferences:
+                      {user_preference}
 
-                  Today's date is: {today_str}
+                      Today's date is: {today_str}
 
-                  Please:
-                  1. For Bond details, please extract Bond Description, company name and name of the instrument
-                  2. From the bond info, extract the frequency of interest payment from the field FREQUENCY_OF_THE_INTEREST_PAYMENT.
-                  Use only one of the following standard values: "monthly", "quarterly", "semi-annual", "semin annual", or "annual".
-                  3. Extract redemption year from bond information to calulate horizon to be used by the tool. The horizon should be calculated as difference between redemption date and the date today.
-                  to calculate coupon payments using the tool.
-                  4. Calculate the coupon payments using this frequency
-                  5. Show the payouts in a tabular format
-                  6. Provide an analysis to the user to show how this bond aligns with the user's preferences
+                      Please:
+                      1. For Bond details, please extract Bond Description, company name and name of the instrument
+                      2. From the bond info, extract the frequency of interest payment from the field FREQUENCY_OF_THE_INTEREST_PAYMENT.
+                      Use only one of the following standard values: "monthly", "quarterly", "semi-annual", "semin annual", or "annual".
+                      3. Extract redemption year from bond information to calulate horizon to be used by the tool. The horizon should be calculated as difference between redemption date and the date today.
+                      to calculate coupon payments using the tool.
+                      4. Calculate the coupon payments using this frequency
+                      5. Show the payouts in a tabular format
+                      6. Provide an analysis to the user to show how this bond aligns with the user's preferences
 
-                  In the final response, do **not** list the steps or explain what was done.  Just show the final table of payouts and
-                  provide a comprehensive analysis on how the bond aligns with the user's preferences.
+                      In the final response, do **not** list the steps or explain what was done.  Just show the final table of payouts and
+                      provide a comprehensive analysis on how the bond aligns with the user's preferences.
 
-                  The final response should be in the following format:
-                  <bond_description>
-                  <company_name>
-                  <instrument_name>
-                  <payout_schedule>
-                  <analysis>
+                      The final response should be in the following format:
+                      <bond_description>
+                      <company_name>
+                      <instrument_name>
+                      <payout_schedule>
+                      <analysis>
 """
 
-    messages = [
-        SystemMessage(content=(
-            "You are a financial advisor who helps users understand their bond investments. "
-            "You have access to a tool called `calculate_coupon_payout` which calculates coupon payouts "
-            "based on investment amount, interest rate, payout frequency, and investment duration. "
-        )),
-        HumanMessage(content=prompt)
-    ]
+        messages = [
+            SystemMessage(content=(
+                "You are a financial advisor who helps users understand their bond investments. "
+                "You have access to a tool called `calculate_coupon_payout` which calculates coupon payouts "
+                "based on investment amount, interest rate, payout frequency, and investment duration. "
+            )),
+            HumanMessage(content=prompt)
+        ]
 
-    final_state = graph.invoke({"messages": messages})
-    return final_state['messages'][-1].content
+        final_state = graph.invoke({"messages": messages})
+        return final_state['messages'][-1].content
+        
+    except Exception as e:
+        return f"AI analysis error: {str(e)}. The system encountered an issue while generating the analysis."
